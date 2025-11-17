@@ -1,0 +1,15 @@
+# monitoring/prometheus.yml
+# Prometheus configuration - Will collect metrics (we'll add this later)
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  # Monitor Prometheus itself
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  # We'll add service metrics here later
+  # For now, this is a placeholder

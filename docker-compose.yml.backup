@@ -1,0 +1,48 @@
+# docker-compose.yml
+# Mini-Telex - Simplified version of real Telex
+# Currently has NO monitoring - you'll add it!
+
+version: '3.8'
+
+services:
+  # API Service (Golang) - Simulates telex_be
+  api-service:
+    build:
+      context: ./services/api-service
+      dockerfile: Dockerfile
+    container_name: mini-telex-api
+    ports:
+      - "8000:8000"
+    environment:
+      - SERVICE_NAME=api-service
+      - LOG_LEVEL=info
+    restart: unless-stopped
+
+  # Worker Service (Python) - Simulates queue_processor
+  worker-service:
+    build:
+      context: ./services/worker-service
+      dockerfile: Dockerfile
+    container_name: mini-telex-worker
+    ports:
+      - "8001:8001"
+    environment:
+      - SERVICE_NAME=worker-service
+      - LOG_LEVEL=info
+    restart: unless-stopped
+
+  # Webhook Service (Node.js) - Simulates n8n-executor
+  webhook-service:
+    build:
+      context: ./services/webhook-service
+      dockerfile: Dockerfile
+    container_name: mini-telex-webhook
+    ports:
+      - "8002:8002"
+    environment:
+      - SERVICE_NAME=webhook-service
+      - LOG_LEVEL=info
+    restart: unless-stopped
+
+# Note: No monitoring services yet!
+# You'll add Grafana, Loki, Prometheus here as you learn

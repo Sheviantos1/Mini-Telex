@@ -1,0 +1,16 @@
+# Docker volumes
+*_data/
+loki-data/
+prometheus-data/
+grafana-data/
+# Logs
+*.log
+logs/
+# Environment
+.env
+# IDE
+.vscode/
+.idea/
+# OS
+.DS_Store
+Thumbs.db

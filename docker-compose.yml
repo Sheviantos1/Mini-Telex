@@ -1,0 +1,123 @@
+# docker-compose.yml
+# Mini-Telex WITH Monitoring Stack
+# Now includes Grafana, Loki, Promtail, and Prometheus
+
+services:
+  # ============================================
+  # APPLICATION SERVICES (Your 3 microservices)
+  # ============================================
+  
+  api-service:
+    build:
+      context: ./services/api-service
+      dockerfile: Dockerfile
+    container_name: mini-telex-api
+    ports:
+      - "8000:8000"
+    environment:
+      - SERVICE_NAME=api-service
+      - LOG_LEVEL=info
+    restart: unless-stopped
+    labels:
+      logging: "promtail"  # Promtail will collect logs from this
+      service: "api-service"
+
+  worker-service:
+    build:
+      context: ./services/worker-service
+      dockerfile: Dockerfile
+    container_name: mini-telex-worker
+    ports:
+      - "8001:8001"
+    environment:
+      - SERVICE_NAME=worker-service
+      - LOG_LEVEL=info
+    restart: unless-stopped
+    labels:
+      logging: "promtail"
+      service: "worker-service"
+
+  webhook-service:
+    build:
+      context: ./services/webhook-service
+      dockerfile: Dockerfile
+    container_name: mini-telex-webhook
+    ports:
+      - "8002:8002"
+    environment:
+      - SERVICE_NAME=webhook-service
+      - LOG_LEVEL=info
+    restart: unless-stopped
+    labels:
+      logging: "promtail"
+      service: "webhook-service"
+
+  # ============================================
+  # MONITORING STACK (The new stuff!)
+  # ============================================
+
+  # Loki - Stores and indexes logs
+  loki:
+    image: grafana/loki:2.9.3
+    container_name: mini-telex-loki
+    ports:
+      - "3100:3100"
+    command: -config.file=/etc/loki/local-config.yaml
+    volumes:
+      - ./monitoring/loki-config.yaml:/etc/loki/local-config.yaml
+      - loki-data:/loki
+    restart: unless-stopped
+
+  # Promtail - Collects logs and sends to Loki
+  promtail:
+    image: grafana/promtail:2.9.3
+    container_name: mini-telex-promtail
+    volumes:
+      # Access Docker socket to read container logs
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Read all container logs
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      # Promtail config
+      - ./monitoring/promtail-config.yaml:/etc/promtail/config.yml
+    command: -config.file=/etc/promtail/config.yml
+    depends_on:
+      - loki
+    restart: unless-stopped
+
+  # Prometheus - Collects metrics
+  prometheus:
+    image: prom/prometheus:v2.48.0
+    container_name: mini-telex-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.enable-lifecycle'
+    restart: unless-stopped
+
+  # Grafana - Visualization dashboard
+  grafana:
+    image: grafana/grafana:10.2.2
+    container_name: mini-telex-grafana
+    ports:
+      - "3001:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning
+    depends_on:
+      - loki
+      - prometheus
+    restart: unless-stopped
+
+volumes:
+  loki-data:
+  prometheus-data:
+  grafana-data:
