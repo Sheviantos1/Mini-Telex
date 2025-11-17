@@ -155,4 +155,11 @@ func chaosHandler(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("Chaos mode available. Use ?action=slow|error|crash"))
 	}
+}// Testing PR automation
+
+// Test endpoint for PR automation
+func testHandler(w http.ResponseWriter, r *http.Request) {
+    log.Println("[INFO] Test endpoint called")
+    w.WriteHeader(http.StatusOK)
+    w.Write([]byte(`{"test":"success"}`))
 }
