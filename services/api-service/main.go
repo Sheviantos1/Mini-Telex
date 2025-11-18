@@ -163,3 +163,7 @@ func testHandler(w http.ResponseWriter, r *http.Request) {
     w.WriteHeader(http.StatusOK)
     w.Write([]byte(`{"test":"success"}`))
 }
+// CalculateSum adds two numbers
+func CalculateSum(a, b int) int {
+    return a + b
+}
