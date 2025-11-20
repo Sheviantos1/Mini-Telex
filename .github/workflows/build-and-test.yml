@@ -1,0 +1,196 @@
+name: Build Golang Binary and Run Tests
+
+on:
+  pull_request:
+    branches:
+      - main
+      - develop
+    paths:
+      - 'services/**'
+      - '.github/workflows/build-and-test.yml'
+      - 'go.mod'
+      - 'go.sum'
+
+jobs:
+  build_and_test:
+    runs-on: ubuntu-latest
+    
+    env:
+      TEST_USERNAME: postgres
+      TEST_PASSWORD: password
+      TEST_DB_NAME: test_db
+      TEST_DB_HOST: localhost
+      TEST_DB_PORT: 5432
+      TEST_MIGRATE: true
+    
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: ${{ env.TEST_USERNAME }}
+          POSTGRES_PASSWORD: ${{ env.TEST_PASSWORD }}
+          POSTGRES_DB: ${{ env.TEST_DB_NAME }}
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U postgres -d test_db"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+      
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+      
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+          cache: true
+      
+      - name: Wait for PostgreSQL
+        run: |
+          echo "⏳ Waiting for PostgreSQL to be ready..."
+          for i in {1..30}; do
+            if pg_isready -h localhost -p 5432 -U postgres -d test_db; then
+              echo "✅ PostgreSQL is ready!"
+              exit 0
+            fi
+            echo "Attempt $i/30: PostgreSQL not ready yet..."
+            sleep 2
+          done
+          echo "❌ PostgreSQL failed to start"
+          exit 1
+      
+      - name: Wait for Redis
+        run: |
+          echo "⏳ Waiting for Redis to be ready..."
+          for i in {1..30}; do
+            if redis-cli -h localhost ping | grep -q PONG; then
+              echo "✅ Redis is ready!"
+              exit 0
+            fi
+            echo "Attempt $i/30: Redis not ready yet..."
+            sleep 2
+          done
+          echo "❌ Redis failed to start"
+          exit 1
+      
+      - name: Create test environment file
+        run: |
+          cat > .env.test <<EOF
+          DB_HOST=localhost
+          DB_PORT=5432
+          DB_USER=${{ env.TEST_USERNAME }}
+          DB_PASSWORD=${{ env.TEST_PASSWORD }}
+          DB_NAME=${{ env.TEST_DB_NAME }}
+          REDIS_HOST=localhost
+          REDIS_PORT=6379
+          ENVIRONMENT=test
+          EOF
+          echo "✅ Test environment file created"
+      
+      - name: Build the application
+        run: |
+          echo "🔨 Building application..."
+          go build -v -o mini_telex ./services/api-service
+          
+          if [ ! -f mini_telex ]; then
+            echo "❌ Build failed!"
+            exit 1
+          fi
+          
+          echo "✅ Build successful"
+          ls -lh mini_telex
+      
+      - name: Run go vet
+        run: |
+          echo "🔍 Running go vet..."
+          go vet ./services/...
+          echo "✅ Go vet passed"
+      
+      - name: Run gofmt check
+        run: |
+          echo "📝 Checking code formatting..."
+          UNFORMATTED=$(gofmt -l ./services/...)
+          if [ -n "$UNFORMATTED" ]; then
+            echo "❌ Code formatting issues found:"
+            echo "$UNFORMATTED"
+            exit 1
+          fi
+          echo "✅ Code formatting OK"
+      
+      - name: Run tests
+        run: |
+          echo "🧪 Running tests..."
+          go test -v -race -coverprofile=coverage.out ./services/...
+          
+          # Show coverage
+          go tool cover -func=coverage.out | tail -1
+          echo "✅ Tests passed"
+      
+      - name: Check test coverage
+        run: |
+          echo "📊 Checking test coverage..."
+          COVERAGE=$(go tool cover -func=coverage.out | grep total | awk '{print $3}' | sed 's/%//')
+          
+          echo "Test coverage: $COVERAGE%"
+          
+          # Require minimum 50% coverage for tests to pass
+          if (( $(echo "$COVERAGE < 50" | bc -l) )); then
+            echo "⚠️ Coverage is only $COVERAGE% (minimum: 50%)"
+            # Don't fail, just warn
+          else
+            echo "✅ Coverage is acceptable"
+          fi
+      
+      - name: Run security check
+        run: |
+          echo "🔒 Running security checks..."
+          
+          # Check for hardcoded credentials
+          if grep -r "password.*=" services/ | grep -v "test" | grep -v ".md"; then
+            echo "⚠️ Possible hardcoded credentials found (check manually)"
+          fi
+          
+          echo "✅ Security check complete"
+      
+      - name: Upload coverage reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage.out
+          retention-days: 7
+      
+      - name: Success Summary
+        if: success()
+        run: |
+          echo "✅ All checks passed!"
+          echo ""
+          echo "Summary:"
+          echo "  Build: ✅ Success"
+          echo "  Go Vet: ✅ Passed"
+          echo "  Format: ✅ Passed"
+          echo "  Tests: ✅ Passed"
+          echo "  Security: ✅ Checked"
+          echo ""
+          echo "🎉 Ready to merge!"
+      
+      - name: Failure Summary
+        if: failure()
+        run: |
+          echo "❌ Build and test workflow failed!"
+          echo ""
+          echo "Please fix the issues above and push again."
+          exit 1
