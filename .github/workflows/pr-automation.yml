@@ -2,6 +2,8 @@ name: PR Automation Suite
 
 on:
   pull_request:
+    branches:
+      - staging
     types: [opened, synchronize, reopened]
 
 permissions:
