@@ -2,8 +2,6 @@ name: PR Automation Suite
 
 on:
   pull_request:
-    branches:
-      - staging
     types: [opened, synchronize, reopened]
 
 permissions:
@@ -13,17 +11,21 @@ permissions:
   checks: write
   security-events: write
 
+concurrency:
+  group: pr-automation-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   commit-summary:
     runs-on: ubuntu-latest
     name: Commit Message Summary
-    continue-on-error: true  # Won't block PR merge
+    continue-on-error: true 
     
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          fetch-depth: 1
           
       - name: Generate commit summary
         uses: actions/github-script@v7
