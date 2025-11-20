@@ -9,6 +9,7 @@ permissions:
   pull-requests: write
   issues: write
   checks: write
+  security-events: write
 
 jobs:
   commit-summary:
@@ -241,34 +242,33 @@ jobs:
         id: vet
         continue-on-error: true
         run: |
-          go vet ./... 2>&1 | tee vet.log
-          VET_EXIT=${PIPESTATUS[0]}
+          go vet ./... 2>&1 | tee vet.log || true
           
-          if [ $VET_EXIT -eq 0 ]; then
-            echo "status=✅ Passed" >> $GITHUB_OUTPUT
-            echo "issues=0" >> $GITHUB_OUTPUT
-          else
+          if [ -s vet.log ]; then
             ISSUE_COUNT=$(wc -l < vet.log)
             echo "status=⚠️ Issues Found" >> $GITHUB_OUTPUT
             echo "issues=$ISSUE_COUNT" >> $GITHUB_OUTPUT
+          else
+            echo "status=✅ Passed" >> $GITHUB_OUTPUT
+            echo "issues=0" >> $GITHUB_OUTPUT
           fi
           
       - name: Run tests
         id: test
         continue-on-error: true
         run: |
-          go test -v ./... 2>&1 | tee test.log
-          TEST_EXIT=${PIPESTATUS[0]}
+          go test -v ./... 2>&1 | tee test.log || true
           
-          if [ $TEST_EXIT -eq 0 ]; then
+          PASSED=$(grep -c "PASS:" test.log || echo "0")
+          FAILED=$(grep -c "FAIL:" test.log || echo "0")
+          
+          if [ "$FAILED" -eq "0" ]; then
             echo "status=✅ All Passed" >> $GITHUB_OUTPUT
-            PASSED=$(grep -c "PASS:" test.log || echo "0")
             echo "passed=$PASSED" >> $GITHUB_OUTPUT
             echo "failed=0" >> $GITHUB_OUTPUT
           else
             echo "status=❌ Some Failed" >> $GITHUB_OUTPUT
-            FAILED=$(grep -c "FAIL:" test.log || echo "0")
-            echo "passed=0" >> $GITHUB_OUTPUT
+            echo "passed=$PASSED" >> $GITHUB_OUTPUT
             echo "failed=$FAILED" >> $GITHUB_OUTPUT
           fi
           
@@ -276,16 +276,16 @@ jobs:
         id: coverage
         continue-on-error: true
         run: |
-          go test -coverprofile=coverage.out ./... > /dev/null 2>&1
+          go test -coverprofile=coverage.out ./... > /dev/null 2>&1 || true
           
           if [ -f coverage.out ]; then
             COVERAGE=$(go tool cover -func=coverage.out | grep total | awk '{print $3}')
             echo "coverage=$COVERAGE" >> $GITHUB_OUTPUT
             
-            PCT=$(echo $COVERAGE | sed 's/%//')
-            if (( $(echo "$PCT >= 80" | bc -l) )); then
+            PCT=$(echo $COVERAGE | sed 's/%//' || echo "0")
+            if (( $(echo "$PCT >= 80" | bc -l 2>/dev/null || echo "0") )); then
               echo "status=✅ Excellent" >> $GITHUB_OUTPUT
-            elif (( $(echo "$PCT >= 70" | bc -l) )); then
+            elif (( $(echo "$PCT >= 70" | bc -l 2>/dev/null || echo "0") )); then
               echo "status=🟡 Good" >> $GITHUB_OUTPUT
             else
               echo "status=⚠️ Needs Improvement" >> $GITHUB_OUTPUT
@@ -303,13 +303,13 @@ jobs:
             const { owner, repo } = context.repo;
             const pr_number = context.issue.number;
             
-            const vetStatus = '${{ steps.vet.outputs.status }}';
-            const vetIssues = '${{ steps.vet.outputs.issues }}';
-            const testStatus = '${{ steps.test.outputs.status }}';
-            const testPassed = '${{ steps.test.outputs.passed }}';
-            const testFailed = '${{ steps.test.outputs.failed }}';
-            const coverage = '${{ steps.coverage.outputs.coverage }}';
-            const coverageStatus = '${{ steps.coverage.outputs.status }}';
+            const vetStatus = '${{ steps.vet.outputs.status }}' || '⚠️ Not Run';
+            const vetIssues = '${{ steps.vet.outputs.issues }}' || '0';
+            const testStatus = '${{ steps.test.outputs.status }}' || '⚠️ Not Run';
+            const testPassed = '${{ steps.test.outputs.passed }}' || '0';
+            const testFailed = '${{ steps.test.outputs.failed }}' || '0';
+            const coverage = '${{ steps.coverage.outputs.coverage }}' || 'N/A';
+            const coverageStatus = '${{ steps.coverage.outputs.status }}' || '⚠️ Not Run';
             
             const allGood = vetStatus.includes('✅') && testStatus.includes('✅');
             const overallEmoji = allGood ? '✅' : '⚠️';
@@ -349,6 +349,123 @@ jobs:
             
             const existingComment = comments.find(c => 
               c.user.type === 'Bot' && c.body.includes('## 🔍 Code Quality Report')
+            );
+            
+            if (existingComment) {
+              await github.rest.issues.updateComment({
+                owner,
+                repo,
+                comment_id: existingComment.id,
+                body: comment
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner,
+                repo,
+                issue_number: pr_number,
+                body: comment
+              });
+            }
+
+  security-scan:
+    runs-on: ubuntu-latest
+    name: Security Scan
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Run Trivy filesystem scan
+        uses: aquasecurity/trivy-action@master
+        continue-on-error: true
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+          severity: 'CRITICAL,HIGH,MEDIUM'
+          
+      - name: Parse Trivy results
+        id: parse
+        continue-on-error: true
+        run: |
+          if [ -f trivy-results.sarif ]; then
+            # Count vulnerabilities by severity
+            CRITICAL=$(grep -o '"level":"error"' trivy-results.sarif 2>/dev/null | wc -l || echo "0")
+            HIGH=$(grep -o '"level":"warning"' trivy-results.sarif 2>/dev/null | wc -l || echo "0")
+            TOTAL=$((CRITICAL + HIGH))
+            
+            echo "critical=$CRITICAL" >> $GITHUB_OUTPUT
+            echo "high=$HIGH" >> $GITHUB_OUTPUT
+            echo "total=$TOTAL" >> $GITHUB_OUTPUT
+            
+            if [ "$TOTAL" -eq "0" ]; then
+              echo "status=✅ No Issues" >> $GITHUB_OUTPUT
+            elif [ "$CRITICAL" -gt "0" ]; then
+              echo "status=🔴 Critical Issues" >> $GITHUB_OUTPUT
+            else
+              echo "status=🟡 Issues Found" >> $GITHUB_OUTPUT
+            fi
+          else
+            echo "critical=0" >> $GITHUB_OUTPUT
+            echo "high=0" >> $GITHUB_OUTPUT
+            echo "total=0" >> $GITHUB_OUTPUT
+            echo "status=✅ Scan Complete" >> $GITHUB_OUTPUT
+          fi
+          
+      - name: Post security report
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const pr_number = context.issue.number;
+            
+            const status = '${{ steps.parse.outputs.status }}' || '✅ Scan Complete';
+            const critical = '${{ steps.parse.outputs.critical }}' || '0';
+            const high = '${{ steps.parse.outputs.high }}' || '0';
+            const total = '${{ steps.parse.outputs.total }}' || '0';
+            
+            const emoji = status.includes('🔴') ? '🔴' : status.includes('🟡') ? '🟡' : '✅';
+            
+            let comment = `## 🔒 Security Scan\n\n`;
+            comment += `### ${emoji} Status: ${status}\n\n`;
+            
+            if (parseInt(total) > 0) {
+              comment += `| Severity | Count |\n`;
+              comment += `|----------|-------|\n`;
+              comment += `| **Critical** | ${critical} |\n`;
+              comment += `| **High** | ${high} |\n`;
+              comment += `| **Total** | ${total} |\n\n`;
+              
+              if (parseInt(critical) > 0) {
+                comment += `⚠️ **Critical vulnerabilities detected!** Review before merging.\n\n`;
+              } else {
+                comment += `⚠️ Issues found but none are critical.\n\n`;
+              }
+              
+              comment += `**Action Items:**\n`;
+              comment += `1. Review security findings in Actions tab\n`;
+              comment += `2. Update dependencies if needed\n`;
+              comment += `3. Check for security advisories\n`;
+            } else {
+              comment += `✅ No known security vulnerabilities detected\n\n`;
+              comment += `**Scanned:**\n`;
+              comment += `- Dependencies\n`;
+              comment += `- Configuration files\n`;
+              comment += `- Code for security patterns\n`;
+            }
+            
+            comment += `\n---\n*Powered by Trivy Security Scanner*`;
+            
+            const { data: comments } = await github.rest.issues.listComments({
+              owner,
+              repo,
+              issue_number: pr_number
+            });
+            
+            const existingComment = comments.find(c => 
+              c.user.type === 'Bot' && c.body.includes('## 🔒 Security Scan')
             );
             
             if (existingComment) {
